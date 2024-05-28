@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 )
@@ -93,8 +94,16 @@ func (s *Server) handleConn(conn net.Conn) {
 			conn.Write(makeRespError("ERR", "Error parsing RESP command: ", err.Error()))
 		}
 		fmt.Println(cmd)
-		conn.Write([]byte("+PONG\r\n"))
-
+		if strings.ToLower(cmd[0]) == "ping" {
+			conn.Write([]byte("+PONG\r\n"))
+		}
+		if strings.ToLower(cmd[0]) == "echo" {
+			payload := cmd[1]
+			payloadLen := len(payload)
+			conn.Write([]byte(fmt.Sprintf(
+				"$%v\r\n%v\r\n", payloadLen, payload,
+			)))
+		}
 	}
 
 	// conn.Write([]byte("+PONG\r\n"))
@@ -160,7 +169,7 @@ func parseCommand(reader *bufio.Reader) ([]string, error) {
 		if err != nil {
 			return nil, err
 		}
-		command[i] = string(buf)
+		command[i] = string(buf[:len(buf)-2])
 	}
 	return command, nil
 

@@ -24,6 +24,7 @@ type Server struct {
 	listener net.Listener
 	quitch   chan os.Signal
 	wg       *sync.WaitGroup
+	db       *map[string]string
 }
 
 func MakeServer() *Server {
@@ -43,12 +44,13 @@ func (s *Server) Start() {
 
 	var wg sync.WaitGroup
 	s.wg = &wg
+	s.db = &map[string]string{}
 	go s.serve()
 
 	signal.Notify(s.quitch, syscall.SIGINT, syscall.SIGTERM)
 	<-s.quitch // this is blocking until it receives any message on the channel...
 	fmt.Println("Shutting Down...")
-	wg.Wait()
+	s.wg.Wait()
 	fmt.Println("Shutdown Complete")
 }
 
@@ -93,16 +95,26 @@ func (s *Server) handleConn(conn net.Conn) {
 			connLog.Println("Error parsing RESP command: ", err.Error())
 			conn.Write(makeRespError("ERR", "Error parsing RESP command: ", err.Error()))
 		}
-		fmt.Println(cmd)
-		if strings.ToLower(cmd[0]) == "ping" {
+		mainCmd := strings.ToLower(cmd[0])
+		switch mainCmd {
+		case "ping":
 			conn.Write([]byte("+PONG\r\n"))
-		}
-		if strings.ToLower(cmd[0]) == "echo" {
+		case "echo":
 			payload := cmd[1]
 			payloadLen := len(payload)
 			conn.Write([]byte(fmt.Sprintf(
 				"$%v\r\n%v\r\n", payloadLen, payload,
 			)))
+		case "set":
+			(*s.db)[cmd[1]] = cmd[2]
+			conn.Write([]byte("+OK\r\n"))
+		case "get":
+			value, ok := (*s.db)[cmd[1]]
+			if ok {
+				conn.Write(makeBulkStr(value))
+			} else {
+				conn.Write([]byte("-ERR Can't find that key\r\n"))
+			}
 		}
 	}
 
@@ -179,4 +191,13 @@ func makeRespError(errType string, errFmt string, a ...any) []byte {
 	// TODO if contains \r or \n, automatically make bulk string
 	errMsg := fmt.Sprintf(errFmt, a...)
 	return []byte(fmt.Sprintf("-%s %s\r\n", errType, errMsg))
+}
+
+// Go string -> RESP bulk string
+func makeBulkStr(input string) []byte {
+	return []byte(fmt.Sprintf(
+		"$%s\r\n%s\r\n",
+		strconv.Itoa(len(input)),
+		input,
+	))
 }

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 )
 
 func main() {
@@ -24,12 +25,17 @@ type Server struct {
 	listener net.Listener
 	quitch   chan os.Signal
 	wg       *sync.WaitGroup
-	db       *map[string]string
+	db       *sync.Map
+	expirydb *sync.Map
 }
 
 func MakeServer() *Server {
+	var wg sync.WaitGroup
 	return &Server{
-		quitch: make(chan os.Signal, 1),
+		quitch:   make(chan os.Signal, 1),
+		db:       &sync.Map{},
+		expirydb: &sync.Map{},
+		wg:       &wg,
 	}
 }
 
@@ -42,12 +48,9 @@ func (s *Server) Start() {
 	defer listener.Close()
 	s.listener = listener
 
-	var wg sync.WaitGroup
-	s.wg = &wg
-	s.db = &map[string]string{}
 	go s.serve()
-
 	signal.Notify(s.quitch, syscall.SIGINT, syscall.SIGTERM)
+
 	<-s.quitch // this is blocking until it receives any message on the channel...
 	fmt.Println("Shutting Down...")
 	s.wg.Wait()
@@ -65,12 +68,6 @@ func (s *Server) serve() {
 	}
 }
 
-// type Conn struct {
-// 	conn   net.Conn
-// 	log    *log.Logger
-// 	reader *bufio.Reader
-// }
-
 func (s *Server) handleConn(conn net.Conn) {
 	defer conn.Close()
 	connLog := log.New(os.Stderr, conn.RemoteAddr().String(), log.LstdFlags)
@@ -78,14 +75,6 @@ func (s *Server) handleConn(conn net.Conn) {
 	defer s.wg.Done()
 
 	reader := bufio.NewReader(conn)
-	// buf := make([]byte, 1024)
-	// io.ReadFull(reader, buf)
-	// thisConn := &Conn{
-	// 	conn:   conn,
-	// 	log:    connLog,
-	// 	reader: reader,
-	// }
-
 	for {
 		cmd, err := parseCommand(reader)
 		if err != nil {
@@ -106,48 +95,39 @@ func (s *Server) handleConn(conn net.Conn) {
 				"$%v\r\n%v\r\n", payloadLen, payload,
 			)))
 		case "set":
-			(*s.db)[cmd[1]] = cmd[2]
+			if len(cmd) < 3 {
+				conn.Write([]byte("-ERR SET needs at least 2 arguments\r\n"))
+			}
+			s.db.Store(cmd[1], cmd[2])
+			if len(cmd) > 3 && strings.ToLower(cmd[3]) == "px" {
+				if len(cmd) < 4 {
+					conn.Write([]byte("-ERR PX argument found without expiry\r\n"))
+				}
+				expiryInMs, err := strconv.Atoi(cmd[4])
+				if err != nil {
+					conn.Write([]byte("-ERR Cannot parse given expiry\r\n"))
+					break
+				}
+				expiryTime := time.Now().Add(time.Duration(expiryInMs * 1000000)) // ns -> ms
+				s.expirydb.Store(cmd[1], expiryTime)
+			}
 			conn.Write([]byte("+OK\r\n"))
 		case "get":
-			value, ok := (*s.db)[cmd[1]]
+			value, ok := s.db.Load(cmd[1])
 			if ok {
-				conn.Write(makeBulkStr(value))
-			} else {
-				conn.Write([]byte("-ERR Can't find that key\r\n"))
+				expiry, ok := s.expirydb.Load(cmd[1])
+				if ok {
+				}
+				if !ok || expiry.(time.Time).After(time.Now()) {
+					conn.Write(makeBulkStr(value.(string)))
+					break
+				}
+
 			}
+			conn.Write([]byte("$-1\r\n"))
 		}
 	}
-
-	// conn.Write([]byte("+PONG\r\n"))
-	// for {
-	// 	line, err := reader.ReadString('\n')
-	// 	if err != nil {
-	// 		if err == io.EOF {
-	// 			return
-	// 		}
-	// 		return
-	// 	}
-
-	// 	fmt.Println(line)
-
-	// 	var dataType byte = line[0]
-	// 	if dataType != '*' {
-	// 		conn.Write(makeRespError("ERR", "Expected RESP array (*), got: ", line))
-	// 	}
-	// 	arrayLength, err := strconv.Atoi(line[1 : len(line)-2])
-	// 	if err != nil {
-	// 		conn.Write(makeRespError("ERR", "Error processing RESP array"))
-	// 	}
-	// 	for i := range arrayLength {
-
-	// 	}
-	// }
 }
-
-// type Command struct {
-// 	cmd  string
-// 	args []string
-// }
 
 // RESP array of bulk strings -> Go array of strings
 func parseCommand(reader *bufio.Reader) ([]string, error) {

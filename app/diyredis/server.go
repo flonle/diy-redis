@@ -1,4 +1,4 @@
-package main
+package diyredis
 
 import (
 	"bufio"
@@ -16,23 +16,20 @@ import (
 	"time"
 )
 
-func main() {
-	server := MakeServer()
-	server.Start()
-}
-
 type Server struct {
-	listener net.Listener
-	quitch   chan os.Signal
-	wg       *sync.WaitGroup
-	db       *sync.Map
-	expirydb *sync.Map
+	Listener    net.Listener
+	Quitch      chan os.Signal
+	wg          *sync.WaitGroup
+	db          *sync.Map
+	expirydb    *sync.Map
+	RdbDir      string
+	RdbFilename string
 }
 
 func MakeServer() *Server {
 	var wg sync.WaitGroup
 	return &Server{
-		quitch:   make(chan os.Signal, 1),
+		Quitch:   make(chan os.Signal, 1),
 		db:       &sync.Map{},
 		expirydb: &sync.Map{},
 		wg:       &wg,
@@ -46,12 +43,12 @@ func (s *Server) Start() {
 		os.Exit(1)
 	}
 	defer listener.Close()
-	s.listener = listener
+	s.Listener = listener
 
 	go s.serve()
-	signal.Notify(s.quitch, syscall.SIGINT, syscall.SIGTERM)
+	signal.Notify(s.Quitch, syscall.SIGINT, syscall.SIGTERM)
 
-	<-s.quitch // this is blocking until it receives any message on the channel...
+	<-s.Quitch // this is blocking until it receives any message on the channel...
 	fmt.Println("Shutting Down...")
 	s.wg.Wait()
 	fmt.Println("Shutdown Complete")
@@ -59,10 +56,10 @@ func (s *Server) Start() {
 
 func (s *Server) serve() {
 	for {
-		conn, err := s.listener.Accept()
+		conn, err := s.Listener.Accept()
 		if err != nil {
 			log.Println("Error accepting connection: ", err.Error())
-			continue
+			os.Exit(1)
 		}
 		go s.handleConn(conn)
 	}
@@ -76,14 +73,15 @@ func (s *Server) handleConn(conn net.Conn) {
 
 	reader := bufio.NewReader(conn)
 	for {
-		cmd, err := parseCommand(reader)
+		cmd, err := ParseCommand(reader)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
 				return
 			}
 			connLog.Println("Error parsing RESP command: ", err.Error())
-			conn.Write(makeRespError("ERR", "Error parsing RESP command: ", err.Error()))
+			conn.Write([]byte("-ERR Cannot parse RESP command"))
 		}
+
 		mainCmd := strings.ToLower(cmd[0])
 		switch mainCmd {
 		case "ping":
@@ -116,68 +114,20 @@ func (s *Server) handleConn(conn net.Conn) {
 			value, ok := s.db.Load(cmd[1])
 			if ok {
 				expiry, ok := s.expirydb.Load(cmd[1])
-				if ok {
-				}
 				if !ok || expiry.(time.Time).After(time.Now()) {
-					conn.Write(makeBulkStr(value.(string)))
+					conn.Write(MakeBulkStr(value.(string)))
 					break
 				}
-
 			}
 			conn.Write([]byte("$-1\r\n"))
+		case "config":
+			// only supports "config get" right now
+			if cmd[2] == "dir" {
+				fmt.Println(s.RdbDir)
+				conn.Write(MakeArray([]any{"dir", s.RdbDir}))
+			} else if cmd[2] == "dbfilename" {
+				conn.Write(MakeArray([]any{"dbfilename", s.RdbFilename}))
+			}
 		}
 	}
-}
-
-// RESP array of bulk strings -> Go array of strings
-func parseCommand(reader *bufio.Reader) ([]string, error) {
-	unit, err := reader.ReadString('\n')
-	if err != nil {
-		return nil, err
-	}
-	if unit[0] != '*' {
-		return nil, fmt.Errorf("expected RESP array (*), got: %v", unit[0])
-	}
-	arrayLength, err := strconv.Atoi(unit[1 : len(unit)-2])
-	if err != nil {
-		return nil, err
-	}
-
-	command := make([]string, arrayLength)
-	for i := range arrayLength {
-		bulkStrHeader, err := reader.ReadString('\n')
-		if err != nil {
-			return nil, err
-		}
-		if bulkStrHeader[0] != '$' {
-			return nil, fmt.Errorf("expected RESP bulk string ($), got: %v", bulkStrHeader[0])
-		}
-		bulkStrLen, err := strconv.Atoi(bulkStrHeader[1 : len(bulkStrHeader)-2])
-		if err != nil {
-			return nil, err
-		}
-		buf := make([]byte, bulkStrLen+2) // +2 is for the \r\n at the end of the bulk string
-		_, err = io.ReadFull(reader, buf)
-		if err != nil {
-			return nil, err
-		}
-		command[i] = string(buf[:len(buf)-2])
-	}
-	return command, nil
-
-}
-
-func makeRespError(errType string, errFmt string, a ...any) []byte {
-	// TODO if contains \r or \n, automatically make bulk string
-	errMsg := fmt.Sprintf(errFmt, a...)
-	return []byte(fmt.Sprintf("-%s %s\r\n", errType, errMsg))
-}
-
-// Go string -> RESP bulk string
-func makeBulkStr(input string) []byte {
-	return []byte(fmt.Sprintf(
-		"$%s\r\n%s\r\n",
-		strconv.Itoa(len(input)),
-		input,
-	))
 }

@@ -1,6 +1,8 @@
 package diyredis
 
-import "testing"
+import (
+	"testing"
+)
 
 func BenchmarkBulkStr(b *testing.B) {
 	for range b.N {
@@ -10,6 +12,9 @@ func BenchmarkBulkStr(b *testing.B) {
 
 func BenchmarkMakeArray(b *testing.B) {
 	for range b.N {
-		MakeArray([]any{"this", "that", "and the other", "more", "even more", "even more items", "look at how many items!!"})
+		MakeArray([]any{
+			"this", "that", "and the other", "more", "even more", "even more items",
+			"look at how many items!!",
+		})
 	}
 }

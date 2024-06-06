@@ -1,39 +1,44 @@
 package diyredis
 
 import (
-	"bufio"
-	"errors"
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"os"
 	"os/signal"
-	"strconv"
-	"strings"
 	"sync"
 	"syscall"
-	"time"
 )
 
 type Server struct {
 	Listener    net.Listener
 	Quitch      chan os.Signal
 	wg          *sync.WaitGroup
-	db          *sync.Map
-	expirydb    *sync.Map
+	dbs         []RedisDB
 	RdbDir      string
 	RdbFilename string
 }
 
+type RedisDB struct {
+	id       uint
+	valueDB  *sync.Map
+	expiryDB *sync.Map
+}
+
 func MakeServer() *Server {
 	var wg sync.WaitGroup
-	return &Server{
-		Quitch:   make(chan os.Signal, 1),
-		db:       &sync.Map{},
-		expirydb: &sync.Map{},
-		wg:       &wg,
+	dbCount := 16 // 16 databases by default, just like Redis
+	server := Server{
+		Quitch: make(chan os.Signal, 1),
+		dbs:    make([]RedisDB, dbCount),
+		wg:     &wg,
 	}
+	for i := range dbCount {
+		server.dbs[i].id = uint(i)
+		server.dbs[i].valueDB = &sync.Map{}
+		server.dbs[i].expiryDB = &sync.Map{}
+	}
+	return &server
 }
 
 func (s *Server) Start() {
@@ -71,63 +76,12 @@ func (s *Server) handleConn(conn net.Conn) {
 	s.wg.Add(1)
 	defer s.wg.Done()
 
-	reader := bufio.NewReader(conn)
-	for {
-		cmd, err := ParseCommand(reader)
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return
-			}
-			connLog.Println("Error parsing RESP command: ", err.Error())
-			conn.Write([]byte("-ERR Cannot parse RESP command"))
-		}
-
-		mainCmd := strings.ToLower(cmd[0])
-		switch mainCmd {
-		case "ping":
-			conn.Write([]byte("+PONG\r\n"))
-		case "echo":
-			payload := cmd[1]
-			payloadLen := len(payload)
-			conn.Write([]byte(fmt.Sprintf(
-				"$%v\r\n%v\r\n", payloadLen, payload,
-			)))
-		case "set":
-			if len(cmd) < 3 {
-				conn.Write([]byte("-ERR SET needs at least 2 arguments\r\n"))
-			}
-			s.db.Store(cmd[1], cmd[2])
-			if len(cmd) > 3 && strings.ToLower(cmd[3]) == "px" {
-				if len(cmd) < 4 {
-					conn.Write([]byte("-ERR PX argument found without expiry\r\n"))
-				}
-				expiryInMs, err := strconv.Atoi(cmd[4])
-				if err != nil {
-					conn.Write([]byte("-ERR Cannot parse given expiry\r\n"))
-					break
-				}
-				expiryTime := time.Now().Add(time.Duration(expiryInMs * 1000000)) // ns -> ms
-				s.expirydb.Store(cmd[1], expiryTime)
-			}
-			conn.Write([]byte("+OK\r\n"))
-		case "get":
-			value, ok := s.db.Load(cmd[1])
-			if ok {
-				expiry, ok := s.expirydb.Load(cmd[1])
-				if !ok || expiry.(time.Time).After(time.Now()) {
-					conn.Write(MakeBulkStr(value.(string)))
-					break
-				}
-			}
-			conn.Write([]byte("$-1\r\n"))
-		case "config":
-			// only supports "config get" right now
-			if cmd[2] == "dir" {
-				fmt.Println(s.RdbDir)
-				conn.Write(MakeArray([]any{"dir", s.RdbDir}))
-			} else if cmd[2] == "dbfilename" {
-				conn.Write(MakeArray([]any{"dbfilename", s.RdbFilename}))
-			}
-		}
+	session := &Session{
+		server:   s,
+		conn:     conn,
+		valueDB:  s.dbs[0].valueDB, // db 0 as default
+		expiryDB: s.dbs[0].expiryDB,
+		log:      connLog,
 	}
+	session.HandleCommands()
 }

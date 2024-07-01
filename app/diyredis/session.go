@@ -104,6 +104,17 @@ func (s *Session) HandleCommands() {
 				return true
 			})
 			s.conn.Write(MakeArray(keys))
+
+		case "type":
+			_, ok := s.valueDB.Load(cmd[1])
+			if ok {
+				expiry, ok := s.expiryDB.Load(cmd[1])
+				if !ok || expiry.(time.Time).After(time.Now()) {
+					s.conn.Write([]byte("+string\r\n"))
+					break
+				}
+			}
+			s.conn.Write([]byte("+none\r\n"))
 		}
 	}
 }

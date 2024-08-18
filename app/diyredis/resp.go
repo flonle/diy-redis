@@ -70,6 +70,7 @@ func MakeBulkStr(input string) []byte {
 
 // Go slice -> RESP array
 // Only supports strings rn sorry
+// TODO make into generic
 func MakeArray(input []any) []byte {
 	var sb strings.Builder
 	sb.WriteString("*")

@@ -66,11 +66,11 @@ func (s *Server) serve() {
 			log.Println("Error accepting connection: ", err.Error())
 			os.Exit(1)
 		}
-		go s.handleConn(conn)
+		go s.startSession(conn)
 	}
 }
 
-func (s *Server) handleConn(conn net.Conn) {
+func (s *Server) startSession(conn net.Conn) {
 	defer conn.Close()
 	connLog := log.New(os.Stderr, conn.RemoteAddr().String(), log.LstdFlags)
 	s.wg.Add(1)

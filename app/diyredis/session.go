@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +19,7 @@ type Session struct {
 	conn     net.Conn
 	valueDB  *sync.Map
 	expiryDB *sync.Map
+	streamDB *sync.Map
 	log      *log.Logger
 }
 
@@ -27,7 +29,7 @@ func (s *Session) SwitchDB(id int) error {
 	}
 
 	s.valueDB = s.server.dbs[id].valueDB
-	s.valueDB = s.server.dbs[id].expiryDB
+	s.expiryDB = s.server.dbs[id].expiryDB
 	return nil
 }
 
@@ -41,6 +43,7 @@ func (s *Session) HandleCommands() {
 			}
 			s.log.Println("Error parsing RESP command: ", err.Error())
 			s.conn.Write([]byte("-ERR Cannot parse RESP command"))
+			continue
 		}
 
 		mainCmd := strings.ToLower(cmd[0])
@@ -57,17 +60,22 @@ func (s *Session) HandleCommands() {
 
 		case "set":
 			if len(cmd) < 3 {
-				s.conn.Write([]byte("-ERR SET needs at least 2 arguments\r\n"))
+				s.conn.Write([]byte("-ERR Wrong number of arguments for SET command\r\n"))
+				continue
 			}
 
+			// Technically there's a race condition here because the expiry map and
+			// the value map are not synchronized in any way. A reader could read
+			// a new value with an old expiry value or vice versa ¯\_(ツ)_/¯
 			if len(cmd) > 3 && strings.ToLower(cmd[3]) == "px" {
 				if len(cmd) < 4 {
 					s.conn.Write([]byte("-ERR PX argument found without expiry\r\n"))
+					continue
 				}
 				expiryInMs, err := strconv.Atoi(cmd[4])
 				if err != nil {
 					s.conn.Write([]byte("-ERR Cannot parse given expiry\r\n"))
-					break
+					continue
 				}
 				expiryTime := time.Now().Add(time.Duration(expiryInMs * 1000000)) // ns -> ms
 				s.expiryDB.Store(cmd[1], expiryTime)
@@ -78,14 +86,25 @@ func (s *Session) HandleCommands() {
 
 		case "get":
 			value, ok := s.valueDB.Load(cmd[1])
+			fmt.Println("ok")
 			if ok {
 				expiry, ok := s.expiryDB.Load(cmd[1])
+				fmt.Println("ok")
 				if !ok || expiry.(time.Time).After(time.Now()) {
-					s.conn.Write(MakeBulkStr(value.(string)))
-					break
+					strVal, ok := value.(string) // while the map implementation can, and does, hold arbitrary types, get GET command is only for string
+					fmt.Println("ikd")
+					if !ok {
+						fmt.Println("ikd")
+						s.conn.Write([]byte(
+							"-ERR WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+						))
+						continue
+					}
+					s.conn.Write(MakeBulkStr(strVal))
+					continue
 				}
 			}
-			s.conn.Write([]byte("$-1\r\n"))
+			s.conn.Write([]byte("$-1\r\n")) // key not found
 
 		case "config":
 			// only supports "config get" right now
@@ -97,7 +116,7 @@ func (s *Session) HandleCommands() {
 			}
 
 		case "keys":
-			// only support * right now
+			// only supports * right now
 			keys := make([]any, 0)
 			s.valueDB.Range(func(key any, value any) bool {
 				keys = append(keys, key)
@@ -106,15 +125,85 @@ func (s *Session) HandleCommands() {
 			s.conn.Write(MakeArray(keys))
 
 		case "type":
-			_, ok := s.valueDB.Load(cmd[1])
+			value, ok := s.valueDB.Load(cmd[1])
 			if ok {
 				expiry, ok := s.expiryDB.Load(cmd[1])
 				if !ok || expiry.(time.Time).After(time.Now()) {
-					s.conn.Write([]byte("+string\r\n"))
+					s.conn.Write([]byte(
+						"+" + strings.ToLower(reflect.TypeOf(value).Name()) + "\r\n"),
+					)
 					break
 				}
 			}
 			s.conn.Write([]byte("+none\r\n"))
+
+		case "xadd":
+			if len(cmd) < 5 {
+				s.conn.Write([]byte("-ERR Wrong number of arguments for XADD command\r\n"))
+				continue
+			}
+
+			value, ok := s.valueDB.Load(cmd[1])
+			var stream Stream
+			if ok {
+				stream, ok = value.(Stream)
+				if !ok {
+					s.conn.Write([]byte(
+						"-ERR WRONGTYPE Operation against a key holding the wrong kind of value",
+					))
+					continue
+				}
+			} else {
+				stream = Stream{}
+				// s.valueDB.Store(cmd[1], stream) // &stream ?
+			}
+
+			entryID := strings.Split(cmd[2], "-")
+			if len(entryID) != 2 {
+				s.conn.Write([]byte("-ERR Failed to parse command"))
+			}
+			timestampMs, err := strconv.ParseUint(entryID[0], 10, 64)
+			subID, err2 := strconv.ParseUint(entryID[1], 10, 64)
+			if err != nil || err2 != nil {
+				s.conn.Write([]byte("-ERR Failed to parse command"))
+			}
+
+			streamEntry := StreamEntry{
+				TimestampMs: timestampMs, // time.Now().UnixMilli() if we had to automate
+				SubID:       subID,
+				Vals:        cmd[3:len(cmd)],
+			}
+			s.valueDB.Store(cmd[1], append(stream, streamEntry))
+			s.conn.Write(MakeBulkStr(cmd[2]))
+
+		case "xrange":
+			// if len(cmd) < 4 {
+			// 	s.conn.Write([]byte("-ERR Wrong number of arguments for XADD command\r\n"))
+			// 	continue
+			// }
+
+			// value, ok := s.valueDB.Load(cmd[1])
+			// if !ok {
+			// 	s.conn.Write(MakeArray(nil)) // empty array
+			// 	continue
+			// }
+			// stream, ok := value.(Stream)
+			// if !ok {
+			// 	s.conn.Write([]byte(
+			// 		"-ERR WRONGTYPE Operation against a key holding the wrong kind of value",
+			// 	))
+			// 	continue
+			// }
+
+			// buf := []
+
+			// start, end := cmd[2], cmd[3]
+
+			// s.conn.Write(MakeBulkStr(""))
+
+		default:
+			s.conn.Write([]byte("-ERR Command not known\r\n"))
+			continue
 		}
 	}
 }

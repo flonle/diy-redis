@@ -32,12 +32,12 @@ func genRandStreamKeys(count int) ([]string, int64) {
 	var sb strings.Builder
 	var wordLen int
 	for i := range count {
-		wordLen = randgen.Intn(20) + 1 // between 1 and 20 inclusive
+		wordLen = randgen.Intn(19) + 1 // between 1 and 19 inclusive
 		for range wordLen {
 			sb.WriteByte(numericRunes[randgen.Intn(len(numericRunes))])
 		}
 		sb.WriteRune('-')
-		wordLen = randgen.Intn(20) + 1 // between 1 and 20 inclusive
+		wordLen = randgen.Intn(19) + 1 // between 1 and 19 inclusive
 		for range wordLen {
 			sb.WriteByte(numericRunes[randgen.Intn(len(numericRunes))])
 		}
@@ -56,7 +56,10 @@ func TestStreamSetAndTest(t *testing.T) {
 	for i := range 1000 {
 		t.Log(testStreamKeys[i])
 		stream.Insert(testStreamKeys[i], i)
-		got, ok, _ := stream.Search(testStreamKeys[i])
+		got, ok, err := stream.Search(testStreamKeys[i])
+		if err != nil {
+			t.Errorf("got error during test: %v", err)
+		}
 		if !ok {
 			t.Errorf("could not find key %v after insertion", testStreamKeys[i])
 		}

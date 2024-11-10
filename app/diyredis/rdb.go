@@ -115,7 +115,6 @@ func rdbPreFlight(fn string) error {
 	}
 
 	// TODO remove after cc tests
-	fmt.Println(lastBytesRead)
 	return nil
 
 	// Sanity check; CRC OK?
@@ -142,15 +141,9 @@ func rdbPreFlight(fn string) error {
 
 	// TODO pre v5 or something crc did not exist in the rdb format so there won't be any zeroes there either
 	reportedCRC := binary.LittleEndian.Uint64(buf[lastBytesRead-8 : lastBytesRead])
-	// fmt.Println(reportedCRC)
-
-	// fmt.Println(buf[lastBytesRead-8 : lastBytesRead])
-	// fmt.Println(hash.Sum64())
 
 	hashy := crc64.New()
 	_, _ = hashy.Write([]byte("123456789"))
-	fmt.Println(hashy.Sum64())
-	fmt.Println(uint64(0xe9c6d914c4b8d9ca))
 
 	if reportedCRC == 0 {
 		log.Println("skipping CRC validation: checksum not in RDB file")

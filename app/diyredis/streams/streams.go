@@ -51,6 +51,7 @@ import (
 	"errors"
 	"math/bits"
 	"strconv"
+	"time"
 )
 
 type StreamEntryKey struct {
@@ -71,13 +72,6 @@ func (k StreamEntryKey) GreaterThan(k2 StreamEntryKey) bool {
 		return true
 	}
 	return false
-}
-func NewKey(key string) (StreamEntryKey, error) {
-	part1, part2, err := parseStreamKey(key)
-	if err != nil {
-		return StreamEntryKey{}, err
-	}
-	return NewKeyFromNumbers(part1, part2), nil
 }
 
 func NewKeyFromNumbers(number1 uint64, number2 uint64) StreamEntryKey {
@@ -107,14 +101,14 @@ type RxNode struct {
 	leafInfo      *RxLeafInfo // If not nil, indicates that the node is a leaf.
 }
 
-// Information specific to RxNode's that are leafs.
+// Information specific to RxNodes that are leafs.
 type RxLeafInfo struct {
 	Key string
 	Val any
 }
 
 func (s *Stream) Insert(key string, val any) error {
-	keyObj, err := NewKey(key)
+	keyObj, err := s.NewKey(key)
 	if err != nil {
 		return err
 	}
@@ -135,7 +129,7 @@ func (s *Stream) InsertKey(key StreamEntryKey, val any) {
 }
 
 func (s *Stream) Search(key string) (any, bool, error) {
-	keyObj, err := NewKey(key)
+	keyObj, err := s.NewKey(key)
 	if err != nil {
 		return nil, false, err
 	}
@@ -166,7 +160,7 @@ func (s *Stream) SearchKey(key StreamEntryKey) (any, bool) {
 // }
 
 func (s *Stream) SearchHigher(key string) ([]RxLeafInfo, error) {
-	keyObj, err := NewKey(key)
+	keyObj, err := s.NewKey(key)
 	if err != nil {
 		return nil, err
 	}
@@ -420,46 +414,86 @@ func (n *RxNode) appendChild(childIdx int) {
 	n.children[childIdx] = RxNode{}
 }
 
+func (s *Stream) NewKey(key string) (StreamEntryKey, error) {
+	part1, part2, err := s.parseStreamKey(key)
+	if err != nil {
+		return StreamEntryKey{}, err
+	}
+	return NewKeyFromNumbers(part1, part2), nil
+}
+
 // Parse a stream key string, e.g. "123-123", into two integers, e.g. `123` & `123`.
 // Streamkeys always denote base 10.
 // "0-0" is a valid key.
 // "-1" is valid and identical to "0-1".
 // "-" is valid and identical to "0-0".
-//
-// This *can* and *will* overflow if you supply numbers greater then what a uint64 can
-// hold!
-func parseStreamKey(key string) (uint64, uint64, error) {
-	// on each iteration we "apply the base (10)" to the previous value, and add the new
+func (s *Stream) parseStreamKey(key string) (uint64, uint64, error) {
+	if key == "*" {
+		// special case: auto-generate
+		timestamp := uint64(time.Now().UnixMilli())
+		var seq uint64
+		if timestamp == s.LastKey.LeftNr {
+			seq = s.LastKey.RightNr + 1
+		}
+		return timestamp, seq, nil
+	}
+
+	// On each iteration we "apply the base (10)" to the previous value, and add the new
 	// - '0' to transform the numeric ascii value to its integer counterpart
-	addToResult := func(x uint64, char byte) uint64 {
-		return (x * 10) + uint64(char-'0')
+	addDigitToTotal := func(total uint64, char rune) (newTotal uint64, err error) {
+		const MaxUint64 uint64 = ^uint64(0)
+		const MaxUint64base uint64 = MaxUint64 / 10
+
+		if char < 48 || char > 57 {
+			return 0, errors.New("invalid stream entry key")
+		}
+
+		if total > MaxUint64base {
+			return 0, errors.New("integer overflow")
+		}
+		newBase := total * 10
+		newTotal = newBase + uint64(char-'0')
+		if newTotal < newBase {
+			// Since char is a rune, which is an int32, any overflow caused by the
+			// addition above will result in a result that is lower
+			return newTotal, errors.New("integer overflow")
+		}
+		return newTotal, nil
 	}
 
 	var result1 uint64
 	var result2 uint64
 	var i int
-
-	// The only valid symbols are 0-9 & -, which are all 1 byte under UTF-8,
-	// so we can iterate with i instead of range and still be guaranteed full characters
-	for ; ; i++ {
-		if i >= len(key) {
-			return 0, 0, errors.New("invalid stream entry key: no hyphen")
+	var char rune
+	var err error
+	for i, char = range key {
+		if char == '-' {
+			goto secondLoop
 		}
-		if key[i] == '-' {
+		result1, err = addDigitToTotal(result1, char)
+		if err != nil {
+			return 0, 0, err
+		}
+	}
+	// If we _naturally_ exit the loop, we're missing a hyphen
+	return 0, 0, errors.New("invalid stream entry key: no hyphen")
+
+secondLoop:
+	for _, char := range key[i+1:] {
+		// handle wildcard "*"
+		if char == '*' {
+			if result1 == s.LastKey.LeftNr {
+				result2 = s.LastKey.RightNr + 1
+			} else {
+				result2 = 0
+			}
 			break
 		}
-		if key[i] < 48 || key[i] > 57 {
-			return 0, 0, errors.New("invalid stream entry key: non-numeric character(s)")
-		}
-		result1 = addToResult(result1, key[i])
-	}
 
-	i++
-	for ; i < len(key); i++ {
-		if key[i] < 48 || key[i] > 57 {
-			return 0, 0, errors.New("invalid stream entry key: non-numeric character(s)")
+		result2, err = addDigitToTotal(result2, char)
+		if err != nil {
+			return 0, 0, err
 		}
-		result2 = addToResult(result2, key[i])
 	}
 
 	return result1, result2, nil

@@ -343,8 +343,7 @@ func readStringEnc(r *bufio.Reader) (string, uint, error) {
 	if err != nil {
 		return "", 0, err
 	}
-	fmt.Println(bytesToStr((buf)))
-	return bytesToStr(buf), 0, nil
+	return string(buf), 0, nil
 
 }
 
@@ -366,7 +365,7 @@ func readCompressedStr(r *bufio.Reader) (string, error) {
 
 	outputBuf := make([]byte, uncompressedLen)
 	lzf.Decompress(buf, outputBuf)
-	return bytesToStr(outputBuf), nil
+	return string(outputBuf), nil
 }
 
 // Parse Redis' length encoding, returning either the length or the 'special format'

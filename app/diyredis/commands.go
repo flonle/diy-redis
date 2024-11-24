@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	resp3 "github.com/codecrafters-io/redis-starter-go/app/diyredis/resp3"
 	streams "github.com/codecrafters-io/redis-starter-go/app/diyredis/streams"
 )
 
@@ -65,10 +66,50 @@ func (s *Session) HandleCommands() {
 			s.doTYPE(cmd)
 		case "xadd":
 			s.doXADD(cmd)
+		case "xrange":
+			s.doXRANGE(cmd)
 		default:
 			s.conn.Write([]byte("-ERR Command not known\r\n"))
 		}
 	}
+}
+
+// RESP array of bulk strings -> Go array of strings
+func ParseCommand(reader *bufio.Reader) ([]string, error) {
+	unit, err := reader.ReadString('\n')
+	if err != nil {
+		return nil, err
+	}
+	if unit[0] != '*' {
+		return nil, fmt.Errorf("expected RESP array (*), got: %v", unit[0])
+	}
+	arrayLength, err := strconv.Atoi(unit[1 : len(unit)-2])
+	if err != nil {
+		return nil, err
+	}
+
+	command := make([]string, arrayLength)
+	for i := range arrayLength {
+		bulkStrHeader, err := reader.ReadString('\n')
+		if err != nil {
+			return nil, err
+		}
+		if bulkStrHeader[0] != '$' {
+			return nil, fmt.Errorf("expected RESP bulk string ($), got: %v", bulkStrHeader[0])
+		}
+		bulkStrLen, err := strconv.Atoi(bulkStrHeader[1 : len(bulkStrHeader)-2])
+		if err != nil {
+			return nil, err
+		}
+		buf := make([]byte, bulkStrLen+2) // +2 is for the \r\n at the end of the bulk string
+		_, err = io.ReadFull(reader, buf)
+		if err != nil {
+			return nil, err
+		}
+		command[i] = string(buf[:len(buf)-2])
+	}
+	return command, nil
+
 }
 
 func (s *Session) writeError(e error) {
@@ -99,7 +140,7 @@ func (s *Session) doXADD(cmds []string) {
 		// Technically this causes empty streams to be created, if adding the first entry fails
 	}
 
-	streamEntryKey, err := stream.NewKey(cmds[2])
+	streamEntryKey, err := streams.NewKey(cmds[2], *stream)
 	if err != nil {
 		s.conn.Write([]byte(fmt.Sprintf(
 			"-ERR Could not parse given entry key: %s\r\n", err.Error(),
@@ -114,7 +155,7 @@ func (s *Session) doXADD(cmds []string) {
 		return
 	}
 
-	if !streamEntryKey.GreaterThan(stream.LastKey) {
+	if !streamEntryKey.GreaterThan(stream.LastEntry.Key) {
 		s.conn.Write([]byte(
 			"-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n",
 		))
@@ -138,8 +179,11 @@ func (s *Session) doXADD(cmds []string) {
 	for i := 0; i < len(keyVals); i += 2 {
 		streamEntryVal[keyVals[i]] = keyVals[i+1] // this will never be out of bounds because of the modulo check above
 	}
-	stream.InsertKey(streamEntryKey, streamEntryVal)
-	s.conn.Write(MakeBulkStr(streamEntryKey.String()))
+	stream.Put(streamEntryKey, streamEntryVal)
+	// s.conn.Write(MakeBulkStr(streamEntryKey.String()))
+	encoder := resp3.Encoder{}
+	encoder.WriteBulkStr(streamEntryKey.String())
+	s.conn.Write(encoder.Buf)
 }
 
 func (s *Session) doTYPE(cmds []string) {
@@ -163,21 +207,21 @@ func (s *Session) doTYPE(cmds []string) {
 
 func (s *Session) doKEYS(cmds []string) {
 	// only supports * right now
-	keys := make([]any, 0)
+	keys := make([]string, 0)
 	s.valueDB.Range(func(key any, value any) bool {
-		keys = append(keys, key)
+		keys = append(keys, key.(string))
 		return true
 	})
-	s.conn.Write(MakeArray(keys))
+	s.conn.Write(MakeRESParr(keys))
 }
 
 func (s *Session) doCONFIG(cmds []string) {
 	// only supports "config get" right now
 	if cmds[2] == "dir" {
 		fmt.Println(s.server.RdbDir)
-		s.conn.Write(MakeArray([]any{"dir", s.server.RdbDir}))
+		s.conn.Write(MakeRESParr([]string{"dir", s.server.RdbDir}))
 	} else if cmds[2] == "dbfilename" {
-		s.conn.Write(MakeArray([]any{"dbfilename", s.server.RdbFilename}))
+		s.conn.Write(MakeRESParr([]string{"dbfilename", s.server.RdbFilename}))
 	}
 }
 
@@ -193,7 +237,10 @@ func (s *Session) doGET(cmds []string) {
 				))
 				return
 			}
-			s.conn.Write(MakeBulkStr(strVal))
+
+			encoder := resp3.Encoder{}
+			encoder.WriteBulkStr(strVal)
+			s.conn.Write(encoder.Buf)
 			return
 		}
 	}
@@ -240,29 +287,38 @@ func (s *Session) doPING(cmds []string) {
 }
 
 func (s *Session) doXRANGE(cmds []string) {
-	return
-	// case "xrange":
-	// if len(cmd) < 4 {
-	// 	s.conn.Write([]byte("-ERR Wrong number of arguments for XADD command\r\n"))
-	// 	continue
-	// }
+	if len(cmds) < 4 {
+		s.conn.Write([]byte("-ERR Wrong number of arguments for XADD command\r\n"))
+		return
+	}
 
-	// value, ok := s.valueDB.Load(cmd[1])
-	// if !ok {
-	// 	s.conn.Write(MakeArray(nil)) // empty array
-	// 	continue
-	// }
-	// stream, ok := value.(Stream)
-	// if !ok {
-	// 	s.conn.Write([]byte(
-	// 		"-ERR WRONGTYPE Operation against a key holding the wrong kind of value",
-	// 	))
-	// 	continue
-	// }
+	value, ok := s.valueDB.Load(cmds[1])
+	if !ok {
+		s.conn.Write(EmptyRespArr)
+		return
+	}
+	stream, ok := value.(*streams.Stream)
+	if !ok {
+		s.conn.Write([]byte(
+			"-ERR WRONGTYPE Operation against a key holding the wrong kind of value",
+		))
+		return
+	}
 
-	// buf := []
+	fromKey, err := streams.NewKey(cmds[2], *stream)
+	if err != nil {
+		s.conn.Write([]byte("-ERR Bad \"from\" key"))
+		return
+	}
+	toKey, err := streams.NewKey(cmds[3], *stream)
+	if err != nil {
+		s.conn.Write([]byte("-ERR Bad \"to\" key"))
+		return
+	}
 
-	// start, end := cmd[2], cmd[3]
-
-	// s.conn.Write(MakeBulkStr(""))
+	respResult, err := EntriesToRESP(stream.Range(fromKey, toKey))
+	if err != nil {
+		s.conn.Write([]byte("-ERR Something went wrong"))
+	}
+	s.conn.Write(respResult)
 }

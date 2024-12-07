@@ -68,6 +68,8 @@ func (s *Session) HandleCommands() {
 			s.doXADD(cmd)
 		case "xrange":
 			s.doXRANGE(cmd)
+		case "xread":
+			s.doXREAD(cmd)
 		default:
 			s.conn.Write([]byte("-ERR Command not known\r\n"))
 		}
@@ -161,7 +163,7 @@ func (s *Session) doXADD(cmds []string) {
 		return
 	}
 
-	keyVals := cmds[3:len(cmds)]
+	keyVals := cmds[3:]
 	if len(keyVals) < 2 {
 		s.conn.Write([]byte(
 			"-ERR A stream entry needs at least one key value pair\r\n",
@@ -179,7 +181,7 @@ func (s *Session) doXADD(cmds []string) {
 		streamEntryVal[keyVals[i]] = keyVals[i+1] // this will never be out of bounds because of the modulo check above
 	}
 	stream.Put(streamEntryKey, streamEntryVal)
-	// s.conn.Write(MakeBulkStr(streamEntryKey.String()))
+
 	encoder := resp3.Encoder{}
 	encoder.WriteBulkStr(streamEntryKey.String())
 	s.conn.Write(encoder.Buf)
@@ -211,15 +213,15 @@ func (s *Session) doKEYS(cmds []string) {
 		keys = append(keys, key.(string))
 		return true
 	})
-	s.conn.Write(MakeRESParr(keys))
+	s.conn.Write(makeRESPArr(keys))
 }
 
 func (s *Session) doCONFIG(cmds []string) {
 	// only supports "config get" right now
 	if cmds[2] == "dir" {
-		s.conn.Write(MakeRESParr([]string{"dir", s.server.RdbDir}))
+		s.conn.Write(makeRESPArr([]string{"dir", s.server.RdbDir}))
 	} else if cmds[2] == "dbfilename" {
-		s.conn.Write(MakeRESParr([]string{"dbfilename", s.server.RdbFilename}))
+		s.conn.Write(makeRESPArr([]string{"dbfilename", s.server.RdbFilename}))
 	}
 }
 
@@ -286,7 +288,7 @@ func (s *Session) doPING(cmds []string) {
 
 func (s *Session) doXRANGE(cmds []string) {
 	if len(cmds) < 4 {
-		s.conn.Write([]byte("-ERR Wrong number of arguments for XADD command\r\n"))
+		s.conn.Write([]byte("-ERR Wrong number of arguments for XRANGE command\r\n"))
 		return
 	}
 
@@ -314,9 +316,76 @@ func (s *Session) doXRANGE(cmds []string) {
 		return
 	}
 
-	respResult, err := EntriesToRESP(stream.Range(fromKey, toKey))
+	encoder := &resp3.Encoder{}
+	err = entriesToRESP(encoder, stream.Range(fromKey, toKey))
 	if err != nil {
 		s.conn.Write([]byte("-ERR Something went wrong"))
 	}
-	s.conn.Write(respResult)
+	s.conn.Write(encoder.Buf)
+}
+
+func (s *Session) doXREAD(cmds []string) {
+	if len(cmds) < 4 {
+		s.conn.Write([]byte("-ERR Wrong number of arguments for XREAD command\r\n"))
+		return
+	}
+
+	// Find stream names and their respective keys.
+	var streamNames []string
+	var keys []string
+	for i, cmd := range cmds {
+		// We skip over all other arguments because we don't implement them
+		if strings.ToLower(cmd) == "streams" {
+			streamsStartIdx := i + 1
+			remaining := len(cmds) - streamsStartIdx
+			streamsEndIdx := streamsStartIdx + remaining/2
+			streamNames = cmds[i+1 : streamsEndIdx]
+			keys = cmds[streamsEndIdx:]
+			break
+		}
+	}
+
+	respEncoder := &resp3.Encoder{}
+	respEncoder.WriteArrHeader(len(streamNames))
+
+	// Perform a Range() query for every stream and append the resultset to the RESP
+	// encoder buffer.
+	for i, streamName := range streamNames {
+		value, ok := s.valueDB.Load(streamName)
+		if !ok {
+			// non-existing streams are ignored, because Redis also does this
+			continue
+		}
+		stream, ok := value.(*streams.Stream)
+		if !ok {
+			s.conn.Write([]byte(
+				"-ERR WRONGTYPE Operation against a key holding the wrong kind of value",
+			))
+			return
+		}
+
+		// Add sub-array to encoder
+		respEncoder.WriteArrHeader(2) // one spot for stream name, one for entries
+		respEncoder.WriteBulkStr(streamName)
+
+		// Parse given key
+		fromKey, err := streams.NewKey(keys[i], *stream)
+		if err != nil {
+			s.conn.Write([]byte("-ERR Bad key: " + keys[i]))
+			return
+		}
+
+		fromKey, overflow := fromKey.Next() // because given key is exclusive
+		if overflow {
+			respEncoder.Buf = append(respEncoder.Buf, EmptyRespArr...)
+			continue
+		}
+		err = entriesToRESP(respEncoder, stream.Range(fromKey, streams.MaxKey))
+		if err != nil {
+			s.conn.Write([]byte("-ERR something went wrong"))
+			return
+		}
+	}
+
+	s.conn.Write(respEncoder.Buf)
 }

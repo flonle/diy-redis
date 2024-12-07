@@ -2,6 +2,7 @@ package diyredis
 
 import (
 	"errors"
+	"unicode"
 
 	resp3 "github.com/codecrafters-io/redis-starter-go/app/diyredis/resp3"
 	streams "github.com/codecrafters-io/redis-starter-go/app/diyredis/streams"
@@ -14,8 +15,7 @@ var EmptyRespArr []byte = []byte("*0\r\n")
 //
 // Will encode said map as a (RESP) array of key and values in order, just like in RESP2,
 // even though RESP3 has support for maps.
-func EntriesToRESP(entries []streams.Entry) ([]byte, error) {
-	encoder := resp3.Encoder{}
+func entriesToRESP(encoder *resp3.Encoder, entries []streams.Entry) error {
 	encoder.WriteArrHeader(len(entries))
 
 	for _, entry := range entries {
@@ -23,7 +23,7 @@ func EntriesToRESP(entries []streams.Entry) ([]byte, error) {
 		encoder.WriteBulkStr(entry.Key.String())
 		valMap, ok := entry.Val.(map[string]string)
 		if !ok {
-			return []byte{}, errors.New(
+			return errors.New(
 				"entry with wrong Val type; must be map[string]string",
 			)
 		}
@@ -34,14 +34,23 @@ func EntriesToRESP(entries []streams.Entry) ([]byte, error) {
 		}
 	}
 
-	return encoder.Buf, nil
+	return nil
 }
 
-func MakeRESParr(arr []string) []byte {
+func makeRESPArr(arr []string) []byte {
 	encoder := resp3.Encoder{}
 	encoder.WriteArrHeader(len(arr))
 	for _, val := range arr {
 		encoder.WriteBulkStr(val)
 	}
 	return encoder.Buf
+}
+
+func isAlpha(str string) bool {
+	for _, char := range str {
+		if !unicode.IsLetter(char) {
+			return false
+		}
+	}
+	return true
 }

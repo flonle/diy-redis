@@ -29,6 +29,40 @@ func (k Key) String() string {
 	return strconv.FormatUint(k.LeftNr, 10) + "-" + strconv.FormatUint(k.RightNr, 10)
 }
 
+// Return the "next" higher key. e.g. "1-5" -> "1-6".
+//
+// Will overflow to Key{0,0}, but will let you know through 'overflow'.
+func (k Key) Next() (key Key, overflow bool) {
+	leftNr, rightNr := k.LeftNr, k.RightNr+1
+
+	if rightNr == 0 { // overflow
+		leftNr++
+
+		if leftNr == 0 {
+			// Overflow again! We're already at the highest possible key.
+			overflow = true
+		}
+	}
+	return Key{leftNr, rightNr}, overflow
+}
+
+// Return the "previous" lower key. e.g. "1-5" -> "1-4".
+//
+// Will underflow to Key{max, max}, but will let you know through 'underflow'.
+func (k Key) Prev() (key Key, underflow bool) {
+	leftNr, rightNr := k.LeftNr, k.RightNr-1
+
+	if k.RightNr == MaxUint64 { // underflow
+		leftNr--
+
+		if leftNr == MaxUint64 {
+			// Underflow again! We're already at the lowest possible key.
+			underflow = true
+		}
+	}
+	return Key{leftNr, rightNr}, underflow
+}
+
 // Return true if k is greater than k2
 func (k Key) GreaterThan(k2 Key) bool {
 	if k.LeftNr > k2.LeftNr {

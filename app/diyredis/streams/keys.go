@@ -73,14 +73,23 @@ func (k Key) IsMax() bool {
 	return false
 }
 
-// Parse a stream entry key string, e.g. "123-123", into two integers, e.g. `123` & `123`.
+// Parse a stream entry key string, e.g. "123-123", into two integers, e.g. 123 & 123.
 // Streamkeys always denote base 10.
-// "0-0" is a valid key.
-// "-1" is valid and identical to "0-1".
-// "-" is valid and identical to "0-0".
 //
-// Accepts full wildcards (e.g. "*"), and partial wildcard (e.g. "123-*").
+//   - "-1" is valid and identical to "0-1", idem for "1-".
+//   - "-" represents the lowest possible key, and "+" the highest.
+//   - Accepts full wildcards (e.g. "*"), and partial wildcards (e.g. "123-*").
 func parseEntryKey(key string, lastKeyUsed Key) (uint64, uint64, error) {
+	if key == "-" {
+		// special case: lowest key
+		return 0, 0, nil
+	}
+
+	if key == "+" {
+		// special case: highest key
+		return MaxUint64, MaxUint64, nil
+	}
+
 	if key == "*" {
 		// special case: auto-generate
 		timestamp := uint64(time.Now().UnixMilli())

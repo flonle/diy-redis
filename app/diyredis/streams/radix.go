@@ -1,5 +1,4 @@
-// Uses a bitwise trie with bitmap, or "Array Mapped Tree" (AMT), but with a twist.
-// Array Mapped Tree -> https://infoscience.epfl.ch/server/api/core/bitstreams/607d2e29-f659-463b-b2e0-4b910300d2cf/content
+// Uses a bitwise trie with bitmap, or "[Array Mapped Tree]" (AMT), but with a twist.
 // Single-child nodes are also compressed, making this a Radix.
 //
 // Each internal node has a bitmap that is used to denote valid child nodes.
@@ -42,6 +41,8 @@
 // We use the `bits.OnesCount64()` function for this, which is actually an
 // "intrinstic function"; the Go compiler will emit a native population count
 // instruction whenever the host architecture allows it.
+//
+// [Array Mapped Tree]: https://infoscience.epfl.ch/server/api/core/bitstreams/607d2e29-f659-463b-b2e0-4b910300d2cf/content
 package streams
 
 import (

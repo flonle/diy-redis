@@ -291,25 +291,23 @@ func (n *RxNode) rangeEntries(fromKey internalKey, toKey internalKey) []Entry {
 // lowest to highest key.
 func (n *RxNode) higherEntries(key internalKey) []Entry {
 	higherNodes := n.higherSiblingsDFS(key)
-	leaves := make([]Entry, 0, len(higherNodes)) // AT LEAST as many leaves as there are nodes
+	entries := make([]Entry, 0, len(higherNodes)) // AT LEAST as many leaves as there are nodes
 	for i := len(higherNodes) - 1; i >= 0; i-- {
 		// Reverse iteration because higherSiblingDFS returns from highest to lowest
-		leaves = append(leaves, higherNodes[i].getAllLeaves()...)
+		entries = append(entries, higherNodes[i].getAllLeaves()...)
 	}
-	return leaves
+	return entries
 }
 
 // Return entries under `n` with a key lower than or equal to `key`, ordered from
 // lowest to highest key.
 func (n *RxNode) lowerEntries(key internalKey) []Entry {
-	higherNodes := n.lowerSiblingsDFS(key)
-	leaves := make([]Entry, 0, len(higherNodes)) // AT LEAST as many leaves as there are nodes
-	for i := len(higherNodes) - 1; i >= 0; i-- {
-		// Reverse iteration because lowerSiblingDFS returns from largest to smallest
-		leaves = append(leaves, higherNodes[i].getAllLeaves()...)
+	lowerNodes := n.lowerSiblingsDFS(key)
+	entries := make([]Entry, 0, len(lowerNodes)) // AT LEAST as many leaves as there are nodes
+	for _, node := range lowerNodes {
+		entries = append(entries, node.getAllLeaves()...)
 	}
-
-	return leaves
+	return entries
 }
 
 // Get `RxLeafInfo` of all leaves that are a child of `n`.
@@ -338,7 +336,7 @@ func (n *RxNode) getAllLeaves() []Entry {
 // Note that this does not return *all* higher nodes -- it just does a DFS for `key`,
 // grabbing any sibling nodes with a higher key at every level.
 func (n *RxNode) higherSiblingsDFS(key internalKey) []*RxNode {
-	rightSideNodes := []*RxNode{}
+	result := []*RxNode{}
 	var currentNode = n
 	for depth := 0; ; depth++ {
 
@@ -346,17 +344,17 @@ func (n *RxNode) higherSiblingsDFS(key internalKey) []*RxNode {
 		for ii, char := range currentNode.extraChars {
 			if char < key[depth+ii] { // this cannot go out of bounds because keys are length 22, and so a node's extraChars length can never be more than (22 - node depth)
 				// No keys under this node can ever be higher
-				return rightSideNodes
+				return result
 			} else if char > key[depth+ii] {
 				// All keys under this node are guaranteed to be higher
-				return append(rightSideNodes, currentNode)
+				return append(result, currentNode)
 			}
 			// If prefix == key[i+ii], we have a match and must continue
 		}
 		depth += len(currentNode.extraChars)
 
 		if depth == len(key) {
-			return append(rightSideNodes, currentNode) // just 'return rightSideNodes' for a non-inclusive result
+			return append(result, currentNode) // just 'return rightSideNodes' for a non-inclusive result
 		}
 
 		// child is not compressed and should thus be in `children`.
@@ -366,23 +364,23 @@ func (n *RxNode) higherSiblingsDFS(key internalKey) []*RxNode {
 
 		if currentNode.bitmap&bitmask == 0 {
 			// child does not exist: take all children higher than the hypothetical child, and return
-			return appendPtrsReverse(rightSideNodes, currentNode.children[childIdx:])
+			return appendPtrsReverse(result, currentNode.children[childIdx:])
 		}
 
 		// child exists: take all higher children and continue
-		rightSideNodes = appendPtrs(rightSideNodes, currentNode.children[childIdx+1:])
+		result = appendPtrsReverse(result, currentNode.children[childIdx+1:])
 		// Note: children slices are always ordered from lowest to highest
 		currentNode = &currentNode.children[childIdx]
 	}
 }
 
 // Return a set of nodes whose children all have a key that is lower or equal to `key`.
-// They are ordered by key; highest to lowest.
+// They are ordered by key; lowest to highest.
 //
 // Note that this does not return *all* higher nodes -- it just does a DFS for `key`,
 // grabbing any sibling nodes with a higher key at every level.
 func (n *RxNode) lowerSiblingsDFS(key internalKey) []*RxNode {
-	leftSideNodes := []*RxNode{}
+	result := []*RxNode{}
 	var currentNode = n
 	for depth := 0; ; depth++ {
 
@@ -390,17 +388,17 @@ func (n *RxNode) lowerSiblingsDFS(key internalKey) []*RxNode {
 		for ii, char := range currentNode.extraChars {
 			if char > key[depth+ii] { // this cannot go out of bounds because keys are length 22, and so a node's extraChars length can never be more than (22 - node depth)
 				// No keys under this node can ever be lower
-				return leftSideNodes
+				return result
 			} else if char < key[depth+ii] {
 				// All keys under this node are guaranteed to be lower
-				return append(leftSideNodes, currentNode)
+				return append(result, currentNode)
 			}
 			// If prefix == key[i+ii], we have a match and must continue
 		}
 		depth += len(currentNode.extraChars)
 
 		if depth == len(key) {
-			return append(leftSideNodes, currentNode) // just 'return leftSideNodes' for a non-inclusive result
+			return append(result, currentNode) // just 'return leftSideNodes' for a non-inclusive result
 		}
 
 		// child is not compressed and should thus be in `children`.
@@ -410,11 +408,11 @@ func (n *RxNode) lowerSiblingsDFS(key internalKey) []*RxNode {
 
 		if currentNode.bitmap&bitmask == 0 {
 			// child does not exist: take all children lower than the hypothetical child, and return
-			return appendPtrsReverse(leftSideNodes, currentNode.children[:childIdx-1])
+			return appendPtrs(result, currentNode.children[:childIdx-1])
 		}
 
 		// child exists: take all lower children and continue
-		leftSideNodes = appendPtrs(leftSideNodes, currentNode.children[:childIdx])
+		result = appendPtrs(result, currentNode.children[:childIdx]) // todo: should this not also be appendPtrsReverse?
 		// Note: children slices are always ordered from lowest to highest
 		currentNode = &currentNode.children[childIdx]
 	}

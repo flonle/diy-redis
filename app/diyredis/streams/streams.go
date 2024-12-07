@@ -47,12 +47,10 @@ func (s *Stream) Range(fromKey Key, toKey Key) []Entry {
 		return []Entry{}
 	}
 
-	fromKeyInternal := fromKey.internalRepr()
-	toKeyInternal := toKey.internalRepr()
-
 	// Optimized case: "since"-like query
 	if toKey.IsMax() {
-		return s.root.higherEntries(fromKeyInternal)
+		return s.root.higherEntries(fromKey.internalRepr())
 	}
-	return s.root.rangeEntries(fromKeyInternal, toKeyInternal)
+
+	return s.root.rangeEntries(fromKey.internalRepr(), toKey.internalRepr())
 }

@@ -15,6 +15,8 @@ var seed int64
 
 func TestMain(m *testing.M) {
 	seed = rand.Int63()
+	// seed = 69
+	// seed = 5886852337464378408
 	fmt.Println("Using seed", seed)
 	testStreamKeys = genRandStreamKeys(seed, 10000)
 	m.Run()
@@ -256,11 +258,33 @@ func TestRangeComplex(t *testing.T) {
 	for range 100 {
 		fromKey := Key{randgen.Uint64(), randgen.Uint64()}
 		toKey := Key{randgen.Uint64(), randgen.Uint64()}
-		for _, entry := range stream.Range(fromKey, toKey) {
-			if entry.Key.LesserThan(fromKey) || entry.Key.GreaterThan(toKey) {
+		entries := stream.Range(fromKey, toKey)
+
+		if len(entries) == 0 {
+			continue
+		}
+
+		if entries[0].Key.LesserThan(fromKey) || entries[0].Key.GreaterThan(toKey) {
+			t.Errorf(
+				"entry in Range() resultset has key %s, which is not between %s and %s",
+				entries[0].Key, fromKey, toKey,
+			)
+			return
+		}
+
+		for i := 1; i < len(entries); i++ {
+			if entries[i].Key.LesserThan(fromKey) || entries[i].Key.GreaterThan(toKey) {
 				t.Errorf(
 					"entry in Range() resultset has key %s, which is not between %s and %s",
-					entry.Key, fromKey, toKey,
+					entries[i].Key, fromKey, toKey,
+				)
+				return
+			}
+			if entries[i].Key.LesserThan(entries[i-1].Key) {
+				// Entries should be orderd by key; low to high
+				t.Errorf(
+					"entry in Range() resultset has a key (%s) lower than the entry before it (%s)",
+					entries[i].Key, entries[i-1].Key,
 				)
 				return
 			}

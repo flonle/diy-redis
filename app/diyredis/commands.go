@@ -123,7 +123,6 @@ func (s *Session) doXADD(cmds []string) {
 	}
 
 	streamKey := cmds[1]
-	fmt.Println(streamKey)
 	value, ok := s.valueDB.Load(streamKey)
 	var stream *streams.Stream
 	if ok {
@@ -218,7 +217,6 @@ func (s *Session) doKEYS(cmds []string) {
 func (s *Session) doCONFIG(cmds []string) {
 	// only supports "config get" right now
 	if cmds[2] == "dir" {
-		fmt.Println(s.server.RdbDir)
 		s.conn.Write(MakeRESParr([]string{"dir", s.server.RdbDir}))
 	} else if cmds[2] == "dbfilename" {
 		s.conn.Write(MakeRESParr([]string{"dbfilename", s.server.RdbFilename}))

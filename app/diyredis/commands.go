@@ -49,29 +49,34 @@ func (s *Session) HandleCommands() {
 		}
 
 		mainCmd := strings.ToLower(cmd[0])
+		var uerr *UserError
 		switch mainCmd {
 		case "ping":
-			s.doPING(cmd)
+			uerr = s.doPING(cmd)
 		case "echo":
-			s.doECHO(cmd)
+			uerr = s.doECHO(cmd)
 		case "set":
-			s.doSET(cmd)
+			uerr = s.doSET(cmd)
 		case "get":
-			s.doGET(cmd)
+			uerr = s.doGET(cmd)
 		case "config":
-			s.doCONFIG(cmd)
+			uerr = s.doCONFIG(cmd)
 		case "keys":
-			s.doKEYS(cmd)
+			uerr = s.doKEYS(cmd)
 		case "type":
-			s.doTYPE(cmd)
+			uerr = s.doTYPE(cmd)
 		case "xadd":
-			s.doXADD(cmd)
+			uerr = s.doXADD(cmd)
 		case "xrange":
-			s.doXRANGE(cmd)
+			uerr = s.doXRANGE(cmd)
 		case "xread":
-			s.doXREAD(cmd)
+			uerr = s.doXREAD(cmd)
 		default:
-			s.conn.Write([]byte("-ERR Command not known\r\n"))
+			uerr = &UserError{"Command not known"}
+		}
+
+		if uerr != nil {
+			s.conn.Write(uerr.RESP())
 		}
 	}
 }
@@ -114,14 +119,11 @@ func ParseCommand(reader *bufio.Reader) ([]string, error) {
 
 }
 
-func (s *Session) writeError(e error) {
-	s.conn.Write([]byte("-ERR " + e.Error() + "\r\n"))
-}
-
-func (s *Session) doXADD(cmds []string) {
+func (s *Session) doXADD(cmds []string) *UserError {
 	if len(cmds) < 5 {
-		s.conn.Write([]byte("-ERR Wrong number of arguments for XADD command\r\n"))
-		return
+		// s.conn.Write([]byte("-ERR Wrong number of arguments for XADD command\r\n"))
+		// return
+		return &UserError{"wrong number of arguments for XADD command"}
 	}
 
 	streamKey := cmds[1]
@@ -130,50 +132,60 @@ func (s *Session) doXADD(cmds []string) {
 	if ok {
 		stream, ok = value.(*streams.Stream)
 		if !ok {
-			s.conn.Write([]byte(
-				"-ERR WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
-			))
-			return
+			// s.conn.Write([]byte(
+			// 	"-ERR WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+			// ))
+			// return
+			return &UserError{"WRONGTYPE Operation against a key holding the wrong kind of value"}
 		}
 	} else {
-		stream = &streams.Stream{}
+		stream = streams.NewStream()
 		s.valueDB.Store(streamKey, stream)
 		// Technically this causes empty streams to be created, if adding the first entry fails
 	}
 
-	streamEntryKey, err := streams.NewKey(cmds[2], *stream)
+	streamEntryKey, err := streams.NewKey(cmds[2], stream)
 	if err != nil {
-		s.conn.Write([]byte(fmt.Sprintf(
-			"-ERR Could not parse given entry key: %s\r\n", err.Error(),
-		)))
-		return
+		// s.conn.Write([]byte(fmt.Sprintf(
+		// 	"could not parse given entry key: %s\r\n", err.Error(),
+		// )))
+		// return
+		return &UserError{fmt.Sprintf(
+			"could not parse given entry key: %s", err.Error(),
+		)}
 	}
 
 	if streamEntryKey.LeftNr == 0 && streamEntryKey.RightNr == 0 {
-		s.conn.Write([]byte(
-			"-ERR The ID specified in XADD must be greater than 0-0\r\n",
-		))
-		return
+		// s.conn.Write([]byte(
+		// 	"-ERR The ID specified in XADD must be greater than 0-0\r\n",
+		// ))
+		// return
+		return &UserError{"the ID specified in XADD must be greater than 0-0"}
 	}
 
 	if !streamEntryKey.GreaterThan(stream.LastEntry.Key) {
-		s.conn.Write([]byte(
-			"-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n",
-		))
-		return
+		// s.conn.Write([]byte(
+		// 	"-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n",
+		// ))
+		// return
+		return &UserError{
+			"the ID specified in XADD is equal or smaller than the target stream top item",
+		}
 	}
 
 	keyVals := cmds[3:]
 	if len(keyVals) < 2 {
-		s.conn.Write([]byte(
-			"-ERR A stream entry needs at least one key value pair\r\n",
-		))
-		return
+		// s.conn.Write([]byte(
+		// 	"-ERR A stream entry needs at least one key value pair\r\n",
+		// ))
+		// return
+		return &UserError{"a stream entry needs at least one key value pair"}
 	} else if len(keyVals)%2 != 0 {
-		s.conn.Write([]byte(
-			"-ERR Received a key without a value\r\n",
-		))
-		return
+		// s.conn.Write([]byte(
+		// 	"-ERR Received a key without a value\r\n",
+		// ))
+		// return
+		return &UserError{"received a key without a value"}
 	}
 
 	streamEntryVal := make(map[string]string, len(keyVals)/2)
@@ -185,9 +197,10 @@ func (s *Session) doXADD(cmds []string) {
 	encoder := resp3.Encoder{}
 	encoder.WriteBulkStr(streamEntryKey.String())
 	s.conn.Write(encoder.Buf)
+	return nil
 }
 
-func (s *Session) doTYPE(cmds []string) {
+func (s *Session) doTYPE(cmds []string) *UserError {
 	value, ok := s.valueDB.Load(cmds[1])
 	if ok {
 		expiry, ok := s.expiryDB.Load(cmds[1])
@@ -200,13 +213,14 @@ func (s *Session) doTYPE(cmds []string) {
 					"+" + strings.ToLower(reflect.TypeOf(value).Name()) + "\r\n"),
 				)
 			}
-			return
+			return nil
 		}
 	}
 	s.conn.Write([]byte("+none\r\n"))
+	return nil
 }
 
-func (s *Session) doKEYS(cmds []string) {
+func (s *Session) doKEYS(cmds []string) *UserError {
 	// only supports * right now
 	keys := make([]string, 0)
 	s.valueDB.Range(func(key any, value any) bool {
@@ -214,43 +228,49 @@ func (s *Session) doKEYS(cmds []string) {
 		return true
 	})
 	s.conn.Write(makeRESPArr(keys))
+	return nil
 }
 
-func (s *Session) doCONFIG(cmds []string) {
+func (s *Session) doCONFIG(cmds []string) *UserError {
 	// only supports "config get" right now
 	if cmds[2] == "dir" {
 		s.conn.Write(makeRESPArr([]string{"dir", s.server.RdbDir}))
 	} else if cmds[2] == "dbfilename" {
 		s.conn.Write(makeRESPArr([]string{"dbfilename", s.server.RdbFilename}))
 	}
+	return nil
 }
 
-func (s *Session) doGET(cmds []string) {
+func (s *Session) doGET(cmds []string) *UserError {
 	value, ok := s.valueDB.Load(cmds[1])
 	if ok {
 		expiry, ok := s.expiryDB.Load(cmds[1])
 		if !ok || expiry.(time.Time).After(time.Now()) {
 			strVal, ok := value.(string) // while the map implementation can, and does, hold arbitrary types, get GET command is only for string
 			if !ok {
-				s.conn.Write([]byte(
-					"-ERR WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
-				))
-				return
+				// s.conn.Write([]byte(
+				// 	"-ERR WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+				// ))
+				// return
+				return &UserError{"WRONGTYPE Operation against a key holding the wrong kind of value"}
 			}
 
 			encoder := resp3.Encoder{}
 			encoder.WriteBulkStr(strVal)
 			s.conn.Write(encoder.Buf)
-			return
+			return nil
 		}
 	}
+
 	s.conn.Write([]byte("$-1\r\n")) // key not found
+	return nil
 }
 
-func (s *Session) doSET(cmds []string) {
+func (s *Session) doSET(cmds []string) *UserError {
 	if len(cmds) < 3 {
-		s.conn.Write([]byte("-ERR Wrong number of arguments for SET command\r\n"))
-		return
+		// s.conn.Write([]byte("-ERR Wrong number of arguments for SET command\r\n"))
+		// return
+		return &UserError{"wrong number of arguments for SET command"}
 	}
 
 	// There's a race condition here because the expiry map and
@@ -258,13 +278,15 @@ func (s *Session) doSET(cmds []string) {
 	// a new value with an old expiry value and vice versa ¯\_(ツ)_/¯
 	if len(cmds) > 3 && strings.ToLower(cmds[3]) == "px" {
 		if len(cmds) < 4 {
-			s.conn.Write([]byte("-ERR PX argument found without expiry\r\n"))
-			return
+			// s.conn.Write([]byte("-ERR PX argument found without expiry\r\n"))
+			// return
+			return &UserError{"PX argument found without expiry"}
 		}
 		expiryInMs, err := strconv.Atoi(cmds[4])
 		if err != nil {
-			s.conn.Write([]byte("-ERR Cannot parse given expiry\r\n"))
-			return
+			// s.conn.Write([]byte("-ERR Cannot parse given expiry\r\n"))
+			// return
+			return &UserError{"cannot parse given expiry"}
 		}
 		expiryTime := time.Now().Add(time.Duration(expiryInMs * 1000000)) // ns -> ms
 		s.expiryDB.Store(cmds[1], expiryTime)
@@ -272,48 +294,55 @@ func (s *Session) doSET(cmds []string) {
 
 	s.valueDB.Store(cmds[1], cmds[2])
 	s.conn.Write([]byte("+OK\r\n"))
+	return nil
 }
 
-func (s *Session) doECHO(cmds []string) {
+func (s *Session) doECHO(cmds []string) *UserError {
 	payload := cmds[1]
 	payloadLen := len(payload)
 	s.conn.Write([]byte(fmt.Sprintf(
 		"$%v\r\n%v\r\n", payloadLen, payload,
 	)))
+	return nil
 }
 
-func (s *Session) doPING(cmds []string) {
+func (s *Session) doPING(cmds []string) *UserError {
 	s.conn.Write([]byte("+PONG\r\n"))
+	return nil
 }
 
-func (s *Session) doXRANGE(cmds []string) {
+func (s *Session) doXRANGE(cmds []string) *UserError {
 	if len(cmds) < 4 {
-		s.conn.Write([]byte("-ERR Wrong number of arguments for XRANGE command\r\n"))
-		return
+		// s.conn.Write([]byte("-ERR Wrong number of arguments for XRANGE command\r\n"))
+		// return
+		return &UserError{"wrong number of arguments for XRANGE command"}
 	}
 
 	value, ok := s.valueDB.Load(cmds[1])
 	if !ok {
 		s.conn.Write(EmptyRespArr)
-		return
+		return nil
 	}
 	stream, ok := value.(*streams.Stream)
 	if !ok {
-		s.conn.Write([]byte(
-			"-ERR WRONGTYPE Operation against a key holding the wrong kind of value",
-		))
-		return
+		// 	s.conn.Write([]byte(
+		// 		"-ERR WRONGTYPE Operation against a key holding the wrong kind of value",
+		// 	))
+		// 	return
+		return &UserError{"WRONTYPE operation against a key holding the wrong kind of value"}
 	}
 
-	fromKey, err := streams.NewKey(cmds[2], *stream)
+	fromKey, err := streams.NewKey(cmds[2], stream)
 	if err != nil {
-		s.conn.Write([]byte("-ERR Bad \"from\" key"))
-		return
+		// s.conn.Write([]byte("-ERR Bad \"from\" key"))
+		// return
+		return &UserError{"bad \"from\" key"}
 	}
-	toKey, err := streams.NewKey(cmds[3], *stream)
+	toKey, err := streams.NewKey(cmds[3], stream)
 	if err != nil {
-		s.conn.Write([]byte("-ERR Bad \"to\" key"))
-		return
+		// s.conn.Write([]byte("-ERR Bad \"to\" key"))
+		// return
+		return &UserError{"bad \"to\" key"}
 	}
 
 	encoder := &resp3.Encoder{}
@@ -322,20 +351,27 @@ func (s *Session) doXRANGE(cmds []string) {
 		s.conn.Write([]byte("-ERR Something went wrong"))
 	}
 	s.conn.Write(encoder.Buf)
+	return nil
 }
 
-func (s *Session) doXREAD(cmds []string) {
+func (s *Session) doXREAD(cmds []string) *UserError {
 	if len(cmds) < 4 {
-		s.conn.Write([]byte("-ERR Wrong number of arguments for XREAD command\r\n"))
-		return
+		// s.conn.Write([]byte("-ERR Wrong number of arguments for XREAD command\r\n"))
+		// return
+		return &UserError{"wrong number of arguments for XREAD command"}
 	}
 
-	// Find stream names and their respective keys.
+	// Parse commands, find stream name(s) and their respective keys.
 	var streamNames []string
 	var keys []string
-	for i, cmd := range cmds {
-		// We skip over all other arguments because we don't implement them
-		if strings.ToLower(cmd) == "streams" {
+	var i int
+	var blockArg string
+	for i = 0; i < len(cmds)-1; i++ {
+		cmd := strings.ToLower(cmds[i])
+		if cmd == "block" {
+			blockArg = cmds[i+1]
+			i++
+		} else if cmd == "streams" {
 			streamsStartIdx := i + 1
 			remaining := len(cmds) - streamsStartIdx
 			streamsEndIdx := streamsStartIdx + remaining/2
@@ -345,47 +381,174 @@ func (s *Session) doXREAD(cmds []string) {
 		}
 	}
 
-	respEncoder := &resp3.Encoder{}
-	respEncoder.WriteArrHeader(len(streamNames))
-
-	// Perform a Range() query for every stream and append the resultset to the RESP
-	// encoder buffer.
+	// // Collect stream pointers & correct "from" keys
+	results := make(map[*streams.Stream][]streams.Entry, len(streamNames))
+	// streamObjs := make([]*streams.Stream, len(streamNames))
+	// keyObjs := make([]streams.Key, len(keys))
+	emptyResult := true
+	// collectCh := make(chan streams.NewEntryMsg)
 	for i, streamName := range streamNames {
 		value, ok := s.valueDB.Load(streamName)
 		if !ok {
-			// non-existing streams are ignored, because Redis also does this
+			return &UserError{"stream does not exist: " + streamName}
+		}
+		stream, ok := value.(*streams.Stream)
+		if !ok {
+			return &UserError{"WRONGTYPE operation against a key holding the wrong kind of value"}
+		}
+
+		var fromKey streams.Key
+		if keys[i] == "$" {
+			fromKey = stream.LastEntry.Key
+		} else {
+			var err error
+			fromKey, err = streams.NewKey(keys[i], stream)
+			if err != nil {
+				return &UserError{"bad key: " + keys[i]}
+			}
+		}
+
+		if stream.LastEntry.Key.GreaterThan(fromKey) {
+			emptyResult = false
+			fromKey, overflow := fromKey.Next()
+			if overflow {
+				continue
+			}
+			results[stream] = stream.Range(fromKey, streams.MaxKey)
+		} else {
+			results[stream] = []streams.Entry{}
+		}
+		// fromKey, overflow := fromKey.Next()
+		// if overflow {
+		// 	continue
+		// 	// this causes the largest valid key to block forever with BLOCK = 0.
+		// 	// Redis does the same, and I think it makes sense. The supplied key is valid,
+		// 	// it will just never have a valid resultset.
+		// }
+		// results[i] = stream.Range(fromKey, streams.MaxKey)
+	}
+
+	// Check & handle the BLOCK subcommand
+	if emptyResult && len(blockArg) > 0 {
+		blockMs, err := strconv.Atoi(blockArg)
+		if err != nil {
+			return &UserError{"syntax error: invalid BLOCK value"}
+		} else if blockMs < 0 {
+			return &UserError{"BLOCK must be a positive value"}
+		}
+
+		//todo for each stream i need to subscribe
+		// and then we put the entry in a slice in result[i]
+		ch := make(chan streams.NewEntryMsg)
+		for stream, _ := range results {
+			stream.Subscribe(ch, stream)
+		}
+		var entryMsg streams.NewEntryMsg
+		if blockMs == 0 {
+			entryMsg = <-ch
+		} else {
+			select {
+			case entryMsg = <-ch:
+			case <-time.After(time.Duration(blockMs) * time.Millisecond):
+				s.conn.Write([]byte("$-1\r\n"))
+				return nil
+			}
+		}
+		results[entryMsg.SubscriptionID.(*streams.Stream)] = []streams.Entry{entryMsg.Entry}
+	}
+
+	// time.Sleep(time.Duration(blockMs) * time.Millisecond)
+
+	// TODO
+	// just doing sleep is not strictly correct. Only sleep if one of the resultsets
+	// is empty and block is set. Then, wait indefinetly if block == 0 otherwait wait for block ms
+	//
+
+	// Encode to RESP
+	respEncoder := &resp3.Encoder{}
+	respEncoder.WriteArrHeader(len(results))
+	for i, streamName := range streamNames {
+		if len(results[i]) == 0 {
+			continue
+		}
+		respEncoder.WriteArrHeader(2)
+		respEncoder.WriteBulkStr(streamName)
+		err := entriesToRESP(respEncoder, results[i])
+		if err != nil {
+			return &UserError{"something went wrong"}
+		}
+	}
+
+	return nil
+}
+
+func (s *Session) collectXREAD(streamNames []string, keys []string) *UserError {
+	respEncoder := &resp3.Encoder{}
+	respEncoder.WriteArrHeader(len(streamNames))
+
+	for i, streamName := range streamNames {
+		value, ok := s.valueDB.Load(streamName)
+		if !ok {
 			continue
 		}
 		stream, ok := value.(*streams.Stream)
 		if !ok {
-			s.conn.Write([]byte(
-				"-ERR WRONGTYPE Operation against a key holding the wrong kind of value",
-			))
-			return
+			// s.conn.Write([]byte(
+			// 	"-ERR WRONGTYPE Operation against a key holding the wrong kind of value",
+			// ))
+			// return true
+			return &UserError{"WRONGTYPE operation against a key holding the wrong kind of value"}
 		}
 
-		// Add sub-array to encoder
-		respEncoder.WriteArrHeader(2) // one spot for stream name, one for entries
+		var fromKey streams.Key
+		if keys[i] == "$" {
+			fromKey = stream.LastEntry.Key
+		} else {
+			var err error
+			fromKey, err = streams.NewKey(keys[i], stream)
+			if err != nil {
+				// s.conn.Write([]byte("-ERR Bad key: " + keys[i]))
+				// return true
+				return &UserError{"bad key: " + keys[i]}
+			}
+		}
+
+		respEncoder.WriteArrHeader(2)
 		respEncoder.WriteBulkStr(streamName)
 
-		// Parse given key
-		fromKey, err := streams.NewKey(keys[i], *stream)
-		if err != nil {
-			s.conn.Write([]byte("-ERR Bad key: " + keys[i]))
-			return
-		}
-
-		fromKey, overflow := fromKey.Next() // because given key is exclusive
+		fromKey, overflow := fromKey.Next()
 		if overflow {
 			respEncoder.Buf = append(respEncoder.Buf, EmptyRespArr...)
 			continue
 		}
-		err = entriesToRESP(respEncoder, stream.Range(fromKey, streams.MaxKey))
+		err := entriesToRESP(respEncoder, stream.Range(fromKey, streams.MaxKey))
 		if err != nil {
-			s.conn.Write([]byte("-ERR something went wrong"))
-			return
+			// s.conn.Write([]byte("-ERR something went wrong"))
+			// return true
+			return &UserError{"something went wrong"}
 		}
 	}
 
 	s.conn.Write(respEncoder.Buf)
+	return nil
+}
+
+func (s *Session) collectBlockingXREAD(ms int, streamNames []string, keys []string) *UserError {
+	// TODO search for every stream, go func() a closure with waitgroup to call WaitForEntry
+	// after above loop, wait for all streams via wg
+	// Then, send Entry from spawned goroutine to this one
+
+	respEncoder := &resp3.Encoder{}
+	respEncoder.WriteArrHeader(len(streamNames))
+
+	for i, streamName := range streamNames {
+		value, ok := s.valueDB.Load(streamName)
+		if !ok {
+			continue
+		}
+		stream, ok := value.(*streams.Stream)
+		if !ok {
+			return &UserError{"WRONGTYPE operation against a key holding the wrong kind of value"}
+		}
+	}
 }

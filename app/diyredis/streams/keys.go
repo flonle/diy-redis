@@ -17,7 +17,7 @@ type internalKey = []rxChar // internal representation of a stream entry key
 var MaxKey = Key{MaxUint64, MaxUint64}
 var MinKey = Key{0, 0}
 
-func NewKey(key string, targetStream Stream) (Key, error) {
+func NewKey(key string, targetStream *Stream) (Key, error) {
 	part1, part2, err := parseEntryKey(key, targetStream.LastEntry.Key)
 	if err != nil {
 		return Key{}, err

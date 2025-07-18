@@ -53,7 +53,7 @@ func TestKeyGenBasic(t *testing.T) {
 		return false
 	}
 
-	stream := Stream{}
+	stream := NewStream()
 	key1 := Key{0, 0}
 	key1internalRepr := key1.internalRepr()
 	if len(key1internalRepr) != 22 || key1.LeftNr != 0 || key1.RightNr != 0 || internalReprDiff(key1internalRepr, []uint8{21: 0}) {
@@ -99,7 +99,7 @@ func TestKeyGenBasic(t *testing.T) {
 }
 
 func TestKeyGenWildcard(t *testing.T) {
-	stream := Stream{}
+	stream := NewStream()
 
 	key1, err := NewKey("5-5", stream)
 	if err != nil {
@@ -143,7 +143,7 @@ func TestKeyGenWildcard(t *testing.T) {
 }
 
 func TestStreamSetAndTest(t *testing.T) {
-	stream := Stream{}
+	stream := NewStream()
 
 	for i := range 1000 {
 		key := testStreamKeys[i]
@@ -164,7 +164,7 @@ func TestStreamSetAndTest(t *testing.T) {
 }
 
 func TestTrieNotFound(t *testing.T) {
-	stream := Stream{}
+	stream := NewStream()
 
 	for i := range 1000 {
 		_, ok := stream.Search(testStreamKeys[i])
@@ -175,7 +175,7 @@ func TestTrieNotFound(t *testing.T) {
 }
 
 func TestTrieMapCmp(t *testing.T) {
-	stream := Stream{}
+	stream := NewStream()
 	cmpMap := map[Key]any{}
 
 	for i := range 1000 {
@@ -193,7 +193,7 @@ func TestTrieMapCmp(t *testing.T) {
 }
 
 func TestRangeHigherThan(t *testing.T) {
-	stream := Stream{}
+	stream := NewStream()
 	keys := []Entry{ // These are ordered from smallest to largest keys
 		{Key{1, 1}, 0},
 		{Key{1, 2}, 0},
@@ -249,7 +249,7 @@ func TestRangeHigherThan(t *testing.T) {
 }
 
 func TestRangeComplex(t *testing.T) {
-	stream := Stream{}
+	stream := NewStream()
 	for i, key := range testStreamKeys {
 		stream.Put(key, i)
 	}
@@ -307,7 +307,7 @@ func isEqual(first []Entry, second []Entry) bool {
 }
 
 func BenchmarkTrieInsert(b *testing.B) {
-	stream := Stream{}
+	stream := NewStream()
 	b.ResetTimer()
 	for i := range b.N {
 		key := testStreamKeys[i%len(testStreamKeys)]
@@ -316,7 +316,7 @@ func BenchmarkTrieInsert(b *testing.B) {
 }
 
 func BenchmarkTrieSearch(b *testing.B) {
-	stream := Stream{}
+	stream := NewStream()
 	for i := range b.N {
 		key := testStreamKeys[i%len(testStreamKeys)]
 		stream.Put(key, "mycoolval")

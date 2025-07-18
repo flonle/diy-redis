@@ -8,6 +8,18 @@ import (
 	streams "github.com/codecrafters-io/redis-starter-go/app/diyredis/streams"
 )
 
+type UserError struct {
+	msg string
+}
+
+func (e *UserError) Error() string {
+	return e.msg
+}
+
+func (e *UserError) RESP() []byte {
+	return []byte("-ERR " + e.msg + "\r\n")
+}
+
 var EmptyRespArr []byte = []byte("*0\r\n")
 
 // Encode a slice of entries into RESP. Only supports entries whose value is of type
